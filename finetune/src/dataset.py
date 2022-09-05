@@ -15,10 +15,8 @@ class SSDDataset(Dataset):
     """A dataset class for `Samsung AI Challenge For Scientific Discovery` competition.
 
     Args:
-        dataset: A pandas dataframe object containing energy informations.
-        structure_files: A list of SDF molfiles.
-        encoder: A molecular structure encoder.
-        bond_drop_prob: The probability of dropping molecular bonds. Default is `0.1`.
+        two sets of data: g and ex
+        data : g_structure, ex_structure, g_energy, ex_energy
     """
 
     def __init__(
@@ -33,21 +31,23 @@ class SSDDataset(Dataset):
         self.bond_drop_prob = bond_drop_prob
 
         for structure_file in structure_files:
-            example = {"uid": os.path.basename(structure_file)[:-4]}
+            # extract the uid from the filename
+            uid = '_'.join(os.path.basename(structure_file).split("_")[:-1])
+            type_ = os.path.basename(structure_file).split("_")[-1].split(".")[0]
+            example = {"uid": uid}
 
             with open(structure_file, "r") as fp:
                 example["structure"] = parse_mol_structure(fp.read())
                 if example["structure"] is None:
                     continue
+            
+            if type_ == 'g':
+                label = dataset.loc[example["uid"], "Reorg_g"]
 
-            if "S1_energy(eV)" in dataset and "T1_energy(eV)" in dataset:
-                s1_energy = dataset.loc[example["uid"], "S1_energy(eV)"]
-                t1_energy = dataset.loc[example["uid"], "T1_energy(eV)"]
+            elif type_ == 'ex':
+                label = dataset.loc[example["uid"], "Reorg_ex"]
 
-                labels = s1_energy - t1_energy
-                labels = (labels - ST1_ENERGY_GAP_MEAN) / ST1_ENERGY_GAP_STD
-                example["labels"] = labels
-
+            example["labels"] = label
             self.examples.append(example)
 
     def __len__(self) -> int:
