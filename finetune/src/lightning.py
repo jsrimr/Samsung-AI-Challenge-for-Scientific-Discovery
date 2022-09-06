@@ -12,7 +12,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from dataset import ST1_ENERGY_GAP_STD, SSDDataset
+from dataset import SSDDataset
 from encoding import MolecularEncoder
 from modeling import MoTConfig, MoTLayerNorm, MoTModel
 
@@ -60,14 +60,14 @@ class FineTuningModule(pl.LightningModule):
         mse_loss, mae_loss = self(batch[1])
         self.log("train/mse_loss", mse_loss)
         self.log("train/mae_loss", mae_loss)
-        self.log("train/score", mae_loss * ST1_ENERGY_GAP_STD)
+        self.log("train/score", mae_loss)
         return mse_loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], idx: int):
         mse_loss, mae_loss = self(batch[1])
         self.log("val/mse_loss", mse_loss)
         self.log("val/mae_loss", mae_loss)
-        self.log("val/score", mae_loss * ST1_ENERGY_GAP_STD)
+        self.log("val/score", mae_loss)
 
     def create_param_groups(self) -> List[Dict[str, Any]]:
         """Create parameter groups for the optimizer.
@@ -165,7 +165,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         # batches.
         datasets, structure_files = [], []
         for dataset in self.config.data.dataset_files:
-            datasets.append(pd.read_csv(dataset["label"], index_col="uid"))
+            datasets.append(pd.read_csv(dataset["label"], index_col="index"))
             structure_files += [
                 os.path.join(dataset["structures"], filename)
                 for filename in os.listdir(dataset["structures"])
