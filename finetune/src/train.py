@@ -15,7 +15,7 @@ try:
 except ModuleNotFoundError:
     amp_backend = "native"
 
-
+# python src/train.py config/mot-base-pubchem.yaml --resume_from=mot-pretraining/33lst6cy/checkpoints/last.ckpt --resume_id=33lst6cy
 def main(config: DictConfig):
     model_name = f"{config.train.name}-fold{config.data.fold_index}"
     model_checkpoint = ModelCheckpoint(monitor="val/score", save_weights_only=True)
@@ -30,7 +30,8 @@ def main(config: DictConfig):
         gradient_clip_val=config.train.max_grad_norm,
         val_check_interval=config.train.validation_interval,
         accumulate_grad_batches=config.train.accumulate_grads,
-        progress_bar_refresh_rate=1,
+        # resume_from_checkpoint=config.train.resume_from,
+        # progress_bar_refresh_rate=1,
         log_every_n_steps=10,
     ).fit(FineTuningModule(config), datamodule=FineTuningDataModule(config))
 

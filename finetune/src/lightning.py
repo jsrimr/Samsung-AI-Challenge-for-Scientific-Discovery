@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import pytorch_lightning as pl
@@ -34,7 +34,7 @@ class FineTuningModule(pl.LightningModule):
         torch.manual_seed(config.model.random_seed)
 
         self.model = MoTModel(mot_config)
-        self.classifier = nn.Linear(mot_config.hidden_dim, 1)
+        self.classifier = nn.Linear(mot_config.hidden_dim*2, 2)
         self.model.init_weights(self.classifier)
 
         if self.config.model.pretrained_model_path is not None:
@@ -42,18 +42,27 @@ class FineTuningModule(pl.LightningModule):
             self.model.load_state_dict(state_dict)
 
     def forward(
-        self, batch: Dict[str, torch.Tensor]
+        self, batch: List[Dict[str, torch.Tensor]]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states = self.model(
-            batch["input_ids"],
-            batch["attention_mask"],
-            batch["attention_type_ids"],
-            batch["position_ids"],
+        batch_g, batch_ex, labels = batch
+        hidden_states_g = self.model(
+            batch_g["input_ids"],
+            batch_g["attention_mask"],
+            batch_g["attention_type_ids"],
+            batch_g["position_ids"],
         )
+        hidden_states_ex = self.model(
+            batch_ex["input_ids"],
+            batch_ex["attention_mask"],
+            batch_ex["attention_type_ids"],
+            batch_ex["position_ids"],
+        )
+
+        hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
         logits = self.classifier(hidden_states[:, 0, :]).squeeze(-1)
 
-        mse_loss = F.mse_loss(logits, batch["labels"].type_as(logits))
-        mae_loss = F.l1_loss(logits, batch["labels"].type_as(logits))
+        mse_loss = F.mse_loss(logits, labels.type_as(logits))
+        mae_loss = F.l1_loss(logits, labels.type_as(logits))
         return mse_loss, mae_loss
 
     def training_step(self, batch: Dict[str, torch.Tensor], idx: int) -> torch.Tensor:
@@ -165,11 +174,18 @@ class FineTuningDataModule(pl.LightningDataModule):
         # batches.
         datasets, structure_files = [], []
         for dataset in self.config.data.dataset_files:
-            datasets.append(pd.read_csv(dataset["label"], index_col="index"))
-            structure_files += [
-                os.path.join(dataset["structures"], filename)
-                for filename in os.listdir(dataset["structures"])
-            ]
+            df = pd.read_csv(dataset["label"], index_col="index")
+            datasets.append(df)
+
+            for idx in df.index:
+                g_str = os.path.join(dataset["structures"], idx+"_g.mol")
+                ex_str = os.path.join(dataset["structures"], idx+"_ex.mol")
+                structure_files.append((idx, g_str, ex_str))
+
+            # structure_files += [
+            #     os.path.join(dataset["structures"], filename)
+            #     for filename in os.listdir(dataset["structures"])
+            # ]
         dataset = pd.concat(datasets)
 
         # Split the structure file list into k-folds. Note that the splits will be same
@@ -201,18 +217,27 @@ class FineTuningDataModule(pl.LightningDataModule):
         return os.cpu_count()
 
     def dataloader_collate_fn(
-        self, features: List
+        self, features: List[Dict[str, Union[torch.Tensor, int, str]]]
     ) -> Tuple[List[str], Dict[str, torch.Tensor]]:
         """Simple datacollate binder for dataloaders."""
-        uids = [uid for uid, encoding in features]
-        encodings = [encoding for uid, encoding in features]
+        uids = [dict_['uid'] for dict_ in features]
+        encoding_gs = [dict_['encoding_g'] for dict_ in features]
+        encoding_ex = [dict_['encoding_ex'] for dict_ in features]
+        labels = [dict_['labels'] for dict_ in features]
 
-        encodings = self.encoder.collate(
-            encodings,
+        encoding_gs = self.encoder.collate(
+            encoding_gs,
             max_length=self.config.data.max_length,
             pad_to_multiple_of=8,
         )
-        return uids, encodings
+        encoding_ex = self.encoder.collate(
+            encoding_ex,
+            max_length=self.config.data.max_length,
+            pad_to_multiple_of=8,
+        )
+        # list of numpy to tensor
+        labels = torch.tensor(labels, dtype=torch.float32)
+        return uids, (encoding_gs, encoding_ex, labels)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
