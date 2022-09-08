@@ -36,16 +36,16 @@ class FineTuningModule(pl.LightningModule):
 
         self.model = MoTModel(mot_config)
 
-        self.ex_fn1 = nn.Linear(mot_config.hidden_dim, 1)
-        # self.ex_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
+        self.ex_fn1 = nn.Linear(mot_config.hidden_dim, int(np.sqrt(mot_config.hidden_dim)))
+        self.ex_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
 
-        self.g_fn1 = nn.Linear(mot_config.hidden_dim, 1)
-        # self.g_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
+        self.g_fn1 = nn.Linear(mot_config.hidden_dim, int(np.sqrt(mot_config.hidden_dim)))
+        self.g_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
 
         self.model.init_weights(self.ex_fn1)
-        # self.model.init_weights(self.ex_fn2)
+        self.model.init_weights(self.ex_fn2)
         self.model.init_weights(self.g_fn1)
-        # self.model.init_weights(self.g_fn2)
+        self.model.init_weights(self.g_fn2)
 
         if self.config.model.pretrained_model_path is not None:
             state_dict = torch.load(self.config.model.pretrained_model_path)
@@ -69,10 +69,10 @@ class FineTuningModule(pl.LightningModule):
         )
 
         # hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
-        g_g = self.g_fn1(hidden_states_g[:,0, :])
-        g_ex = self.g_fn1(hidden_states_ex[:,0, :])
-        ex_g = self.ex_fn1(hidden_states_g[:,0, :])
-        ex_ex = self.ex_fn1(hidden_states_ex[:,0, :])
+        g_g = self.g_fn2(F.relu(self.g_fn1(hidden_states_g[:,0, :])))
+        g_ex = self.g_fn2(F.relu(self.g_fn1(hidden_states_ex[:,0, :])))
+        ex_g = self.ex_fn2(F.relu(self.ex_fn1(hidden_states_g[:,0, :])))
+        ex_ex = self.ex_fn2(F.relu(self.ex_fn1(hidden_states_ex[:,0, :])))
 
         lambda_g = torch.abs(g_ex - g_g)
         lambda_ex = torch.abs(ex_ex - ex_g)
