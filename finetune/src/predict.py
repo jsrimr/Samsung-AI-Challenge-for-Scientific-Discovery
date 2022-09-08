@@ -20,22 +20,31 @@ class PredictionModel(nn.Module):
         mot_config = MoTConfig(**MolecularEncoder.mot_config, **config.model.config)
 
         self.model = MoTModel(mot_config)
-        self.classifier = nn.Linear(mot_config.hidden_dim, 1)
+        self.classifier = nn.Linear(mot_config.hidden_dim*2, 2)
 
     def forward(
         self, batch: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states = self.model(
-            batch["input_ids"],
-            batch["attention_mask"],
-            batch["attention_type_ids"],
-            batch["position_ids"],
+        batch_g, batch_ex = batch
+        hidden_states_g = self.model(
+            batch_g["input_ids"],
+            batch_g["attention_mask"],
+            batch_g["attention_type_ids"],
+            batch_g["position_ids"],
         )
+        hidden_states_ex = self.model(
+            batch_ex["input_ids"],
+            batch_ex["attention_mask"],
+            batch_ex["attention_type_ids"],
+            batch_ex["position_ids"],
+        )
+
+        hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
         return self.classifier(hidden_states[:, 0, :]).squeeze(-1)
 
 
 class TestSSDDataset(SSDDataset):
-    def __init__(self, dataset:pd.DataFrame, structure_files: List[str], encoder: MolecularEncoder, bond_drop_prob:float=0.0):
+    def __init__(self, dataset: pd.DataFrame, structure_files: List[str], encoder: MolecularEncoder, bond_drop_prob: float = 0.0):
         self.examples = []
         self.encoder = encoder
         self.bond_drop_prob = bond_drop_prob
@@ -52,22 +61,25 @@ class TestSSDDataset(SSDDataset):
                     continue
 
             self.examples.append(example)
-        
+
     def __getitem__(self, index: int) -> Tuple[str, Dict[str, Union[str, List[Union[int, float]]]]]:
         example = self.examples[index]
         encoding = self.encoder.encode(example["structure"])
         return example["uid"], encoding, example['type']
+
 
 def create_dataloader(config: DictConfig) -> DataLoader:
     # Read label csv files and collect SDF molfiles from the configuration. The
     # dataframes will be concatenated and used to find the labels when loading batches.
     datasets, structure_files = [], []
     for dataset in config.data.dataset_files:
-        datasets.append(pd.read_csv(dataset["labels"], index_col="index"))
-        structure_files += [
-            os.path.join(dataset["structures"], filename)
-            for filename in os.listdir(dataset["structures"])
-        ]
+        df = pd.read_csv(dataset["label"], index_col="index")
+        datasets.append(df)
+
+        for idx in df.index:
+            g_str = os.path.join(dataset["structures"], idx+"_g.mol")
+            ex_str = os.path.join(dataset["structures"], idx+"_ex.mol")
+            structure_files.append((idx, g_str, ex_str))
 
     dataset = pd.concat(datasets)
     encoder = MolecularEncoder()
@@ -76,17 +88,36 @@ def create_dataloader(config: DictConfig) -> DataLoader:
     # is necessary because each sample has different length of sequence. To run the
     # model in parallel, it is important to match the lengths.
     def collate_fn(features: List) -> Tuple[List[str], Dict[str, torch.Tensor]]:
-        uids = [uid for uid, encoding, _ in features]
-        encodings = [encoding for uid, encoding, _ in features]
-        types = [type_ for _, _, type_ in features]
-        return uids, encoder.collate(encodings, config.data.max_length, 8), types
+        uids = [dict_['uid'] for dict_ in features]
+        encoding_gs = [dict_['encoding_g'] for dict_ in features]
+        encoding_ex = [dict_['encoding_ex'] for dict_ in features]
+
+        encoding_gs = encoder.collate(
+            encoding_gs,
+            max_length=config.data.max_length,
+            pad_to_multiple_of=8,
+        )
+        encoding_ex = encoder.collate(
+            encoding_ex,
+            max_length=config.data.max_length,
+            pad_to_multiple_of=8,
+        )
+        return uids, (encoding_gs, encoding_ex)
 
     return DataLoader(
-        dataset=TestSSDDataset(dataset, structure_files, encoder, bond_drop_prob=0.0),
+        dataset=SSDDataset(dataset, structure_files, encoder, bond_drop_prob=0.0, predict=True),
         batch_size=config.predict.batch_size,
         collate_fn=collate_fn
     )
 
+def convert_to_cuda(batch):
+    batch = {
+            "input_ids": [x.cuda() for x in batch["input_ids"]],
+            "attention_mask": batch["attention_mask"].cuda(),
+            "attention_type_ids": batch["attention_type_ids"].cuda(),
+            "position_ids": batch["position_ids"].cuda(),
+        }
+    return batch
 
 @torch.no_grad()
 def main(config: DictConfig):
@@ -94,34 +125,26 @@ def main(config: DictConfig):
 
     model = PredictionModel(config).eval().cuda()
     model.load_state_dict(torch.load(config.model.pretrained_model_path))
+    print(f"Loaded model from {config.model.pretrained_model_path}")
 
-    preds_g = []
-    preds_ex = []
-    for uids, batch, type_ in tqdm.tqdm(dataloader):
-        batch = {
-            "input_ids": [x.cuda() for x in batch["input_ids"]],
-            "attention_mask": batch["attention_mask"].cuda(),
-            "attention_type_ids": batch["attention_type_ids"].cuda(),
-            "position_ids": batch["position_ids"].cuda(),
-            "type": type_
-        }
-        for uid, target, t in zip(uids, model(batch).tolist(), type_):
+    preds = []
+    for uids, batch_pair in tqdm.tqdm(dataloader):
+        batch_g, batch_ex = batch_pair
+        batch_g = convert_to_cuda(batch_g) #{k: v.cuda() for k, v in batch_g.items()}
+        batch_ex = convert_to_cuda(batch_ex) #{k: v.cuda() for k, v in batch_ex.items()}
+
+        for uid, target in zip(uids, model((batch_g, batch_ex)).tolist()):
             # target = target * ST1_ENERGY_GAP_STD + ST1_ENERGY_GAP_MEAN
-            if t == "ex":
-                preds_ex.append({"index": uid, "Reorg_ex":target})
-            elif t == "g":
-                preds_g.append({"index": uid, "Reorg_g": target})
+            preds.append({"uid": uid, "Reorg_g": target[0], "Reorg_ex": target[1]})
 
-    preds_g = pd.DataFrame(preds_g).set_index("index")
-    preds_ex = pd.DataFrame(preds_ex).set_index("index")
-    preds = pd.concat([preds_g, preds_ex], axis=1)
-
-    # sort the predictions by the index_num
-    preds['index_num'] = preds.index.str.split('_').str[1].astype(int)
+    preds = pd.DataFrame(preds)
+    preds['index_num'] = preds.uid.str.split('_').str[1].astype(int)
     preds = preds.sort_values('index_num')
     preds = preds.drop('index_num', axis=1)
 
-    preds.to_csv(config.model.pretrained_model_path.replace(".pth", ".csv"))
+    preds.columns = ['index', 'Reorg_g', 'Reorg_ex']
+
+    preds.to_csv(config.model.pretrained_model_path.replace(".pth", ".csv"), index=False)
 
 
 if __name__ == "__main__":
@@ -133,4 +156,3 @@ if __name__ == "__main__":
     config.merge_with_dotlist(unknown_args)
 
     main(config)
-

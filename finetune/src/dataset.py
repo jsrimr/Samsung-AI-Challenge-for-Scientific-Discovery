@@ -25,6 +25,7 @@ class SSDDataset(Dataset):
         structure_files: List[str],
         encoder: MolecularEncoder,
         bond_drop_prob: float = 0.1,
+        predict=False,
     ):
         self.examples = []
         self.encoder = encoder
@@ -45,9 +46,11 @@ class SSDDataset(Dataset):
                 example["structure_ex"] = parse_mol_structure(fp.read())
                 if example["structure_ex"] is None:
                     continue
-            label = dataset.loc[example["uid"], ["Reorg_g", "Reorg_ex"]].values
+            
+            if not predict:
+                label = dataset.loc[example["uid"], ["Reorg_g", "Reorg_ex"]].values
+                example["labels"] = label
 
-            example["labels"] = label
             self.examples.append(example)
 
     def __len__(self) -> int:
@@ -55,7 +58,7 @@ class SSDDataset(Dataset):
 
     def __getitem__(
         self, index: int
-    ) -> Tuple[str, Dict[str, Union[str, List[Union[int, float]]]]]:
+    ) -> Dict[str, Union[str, List[Union[int, float]]]]:
         example = self.examples[index]
 
         def drop_bond(inp_):
@@ -80,7 +83,6 @@ class SSDDataset(Dataset):
             "uid": example["uid"],
             "encoding_g": encoding_g,
             "encoding_ex": encoding_ex,
-            "labels": example["labels"],
         }
         if "labels" in example:
             result["labels"] = example["labels"]
