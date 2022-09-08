@@ -1,6 +1,7 @@
 import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
@@ -34,8 +35,17 @@ class FineTuningModule(pl.LightningModule):
         torch.manual_seed(config.model.random_seed)
 
         self.model = MoTModel(mot_config)
-        self.classifier = nn.Linear(mot_config.hidden_dim*2, 2)
-        self.model.init_weights(self.classifier)
+
+        self.ex_fn1 = nn.Linear(mot_config.hidden_dim, 1)
+        # self.ex_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
+
+        self.g_fn1 = nn.Linear(mot_config.hidden_dim, 1)
+        # self.g_fn2 = nn.Linear(int(np.sqrt(mot_config.hidden_dim)), 1)
+
+        self.model.init_weights(self.ex_fn1)
+        # self.model.init_weights(self.ex_fn2)
+        self.model.init_weights(self.g_fn1)
+        # self.model.init_weights(self.g_fn2)
 
         if self.config.model.pretrained_model_path is not None:
             state_dict = torch.load(self.config.model.pretrained_model_path)
@@ -58,8 +68,15 @@ class FineTuningModule(pl.LightningModule):
             batch_ex["position_ids"],
         )
 
-        hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
-        logits = self.classifier(hidden_states[:, 0, :]).squeeze(-1)
+        # hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
+        g_g = self.g_fn1(hidden_states_g[:,0, :])
+        g_ex = self.g_fn1(hidden_states_ex[:,0, :])
+        ex_g = self.ex_fn1(hidden_states_g[:,0, :])
+        ex_ex = self.ex_fn1(hidden_states_ex[:,0, :])
+
+        lambda_g = torch.abs(g_ex - g_g)
+        lambda_ex = torch.abs(ex_ex - ex_g)
+        logits = torch.cat([lambda_g, lambda_ex], dim=-1)  # (B, 2)
 
         mse_loss = F.mse_loss(logits, labels.type_as(logits))
         mae_loss = F.l1_loss(logits, labels.type_as(logits))
