@@ -13,7 +13,7 @@ from dataset import SSDDataset, parse_mol_structure
 from encoding import MolecularEncoder
 from modeling import MoTConfig, MoTModel
 
-
+from dataset import REORG_G_MEAN, REORG_G_STD, REORG_EX_MEAN, REORG_EX_STD
 class PredictionModel(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -38,9 +38,15 @@ class PredictionModel(nn.Module):
             batch_ex["attention_type_ids"],
             batch_ex["position_ids"],
         )
-
         hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
-        return self.classifier(hidden_states[:, 0, :]).squeeze(-1)
+        logits = self.classifier(hidden_states[:, 0, :]).squeeze(-1)  # [batch, 2]
+
+        logits[:,0] = logits[:,0] * REORG_G_STD + REORG_G_MEAN
+        logits[:,1] = logits[:,1] * REORG_EX_STD + REORG_EX_MEAN
+
+        return logits
+        # hidden_states = torch.cat([hidden_states_g, hidden_states_ex], dim=-1)
+        # return self.classifier(hidden_states[:, 0, :]).squeeze(-1)
 
 
 class TestSSDDataset(SSDDataset):
@@ -134,7 +140,7 @@ def main(config: DictConfig):
         batch_ex = convert_to_cuda(batch_ex) #{k: v.cuda() for k, v in batch_ex.items()}
 
         for uid, target in zip(uids, model((batch_g, batch_ex)).tolist()):
-            # target = target * ST1_ENERGY_GAP_STD + ST1_ENERGY_GAP_MEAN
+
             preds.append({"uid": uid, "Reorg_g": target[0], "Reorg_ex": target[1]})
 
     preds = pd.DataFrame(preds)

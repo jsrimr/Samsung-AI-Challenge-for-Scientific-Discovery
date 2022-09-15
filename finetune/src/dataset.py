@@ -7,9 +7,11 @@ from torch.utils.data import Dataset
 
 from encoding import MolecularEncoder
 
-ST1_ENERGY_GAP_MEAN = 0.8486
-ST1_ENERGY_GAP_STD = 0.3656
 
+REORG_G_MEAN = 0.654861
+REORG_G_STD = 0.359932
+REORG_EX_MEAN = 0.589279
+REORG_EX_STD = 0.336561
 
 class SSDDataset(Dataset):
     """A dataset class for `Samsung AI Challenge For Scientific Discovery` competition.
@@ -49,6 +51,8 @@ class SSDDataset(Dataset):
             
             if not predict:
                 label = dataset.loc[example["uid"], ["Reorg_g", "Reorg_ex"]].values
+                label[0] = (label[0] - REORG_G_MEAN) / REORG_G_STD
+                label[1] = (label[1] - REORG_EX_MEAN) / REORG_EX_STD
                 example["labels"] = label
 
             self.examples.append(example)

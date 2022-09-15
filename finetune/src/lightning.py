@@ -12,7 +12,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from dataset import SSDDataset
+from dataset import REORG_EX_STD, REORG_G_STD, SSDDataset
 from encoding import MolecularEncoder
 from modeling import MoTConfig, MoTLayerNorm, MoTModel
 
@@ -69,14 +69,14 @@ class FineTuningModule(pl.LightningModule):
         mse_loss, mae_loss = self(batch[1])
         self.log("train/mse_loss", mse_loss)
         self.log("train/mae_loss", mae_loss)
-        self.log("train/score", mae_loss)
+        self.log("train/score", mae_loss * (REORG_G_STD + REORG_EX_STD) / 2 )
         return mse_loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], idx: int):
         mse_loss, mae_loss = self(batch[1])
         self.log("val/mse_loss", mse_loss)
         self.log("val/mae_loss", mae_loss)
-        self.log("val/score", mae_loss)
+        self.log("val/score", mae_loss * (REORG_G_STD + REORG_EX_STD) / 2 )
 
     def create_param_groups(self) -> List[Dict[str, Any]]:
         """Create parameter groups for the optimizer.

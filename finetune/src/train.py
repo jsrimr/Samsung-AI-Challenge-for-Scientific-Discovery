@@ -19,10 +19,10 @@ except ModuleNotFoundError:
 def main(config: DictConfig):
     model_name = f"{config.train.name}-fold{config.data.fold_index}"
     model_checkpoint = ModelCheckpoint(monitor="val/score", save_weights_only=True)
-
+    logger = WandbLogger(project="mot-finetuning", name=model_name),
     Trainer(
         gpus=config.train.gpus,
-        logger=WandbLogger(project="mot-finetuning", name=model_name),
+        logger=logger,
         callbacks=[model_checkpoint, LearningRateMonitor("step")],
         precision=config.train.precision,
         max_epochs=config.train.epochs,
